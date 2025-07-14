@@ -1,11 +1,11 @@
-# `polars_sheet_reader`
+# `psr`
 
 This Rust library provides functionalities for reading data from spreadsheet files (like Excel or ODS) using the `calamine` library and converting them into [Polars](https://pola.rs/) `DataFrame`s.
 
 ## Example
 
 ```rust
-use polars_sheet_reader::{read_sheet, ReaderResult, Xlsx, ReadSheetOptions};
+use psr::{read_sheet, ReaderResult, Xlsx, ReadSheetOptions};
 use polars::prelude::DataFrame;
 
 fn main() -> ReaderResult<()> {

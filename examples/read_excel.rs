@@ -1,4 +1,4 @@
-use polars_sheet_reader::{Xlsx, read_sheet, read_sheets};
+use psr::{Xlsx, read_sheet, read_sheets};
 use std::env;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -1966,20 +1966,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "polars_sheet_reader"
-version = "0.0.1"
-dependencies = [
- "calamine",
- "chrono",
- "itertools",
- "jiff",
- "log",
- "polars",
- "strings",
- "thiserror",
-]
-
-[[package]]
 name = "portable-atomic"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2028,6 +2014,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e944464ec8536cd1beb0bbfd96987eb5e3b72f2ecdafdc5c769a37f1fa2ae1f"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "psr"
+version = "0.0.1"
+dependencies = [
+ "calamine",
+ "chrono",
+ "itertools",
+ "jiff",
+ "log",
+ "polars",
+ "strings",
+ "thiserror",
 ]
 
 [[package]]
