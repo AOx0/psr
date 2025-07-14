@@ -1,0 +1,39 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Cargo lock file (uncomment if you're building a library)
+# Cargo.lock
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Backup files
+*.bak
+*.backup
+*.tmp
+
+# Log files
+*.log
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Flamegraph profiling
+flamegraph.svg
+perf.data*

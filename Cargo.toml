@@ -1,0 +1,22 @@
+[package]
+name = "polars_sheet_reader"
+version = "0.0.1"
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+thiserror = "2.0.12"
+itertools = "0.14.0"
+calamine = { version = "0.26.1", features = ["chrono"] }
+
+strings = { git = "https://github.com/AOx0/strings", rev = "v0.0.1" }
+jiff = { version = "0.2.5", features = ["tzdb-bundle-always"] }
+chrono = "0.4.41"
+log = "0.4.27"
+polars = "*"
+
+[[example]]
+name = "read_excel"
+path = "examples/read_excel.rs"
