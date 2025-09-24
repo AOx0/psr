@@ -382,17 +382,34 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
         }
 
         if values_len != 0 {
+            let collected_data_types = [
+                u8::from(vec_boolean.iter().any(|v| v.is_some())),
+                u8::from(vec_date.iter().any(|v| v.is_some())),
+                u8::from(vec_int64.iter().any(|v| v.is_some())),
+                u8::from(vec_float64.iter().any(|v| v.is_some())),
+                u8::from(vec_string.iter().any(|v| v.is_some())),
+            ]
+            .iter()
+            .sum::<u8>();
+
+            if collected_data_types != 1 {
+                eprintln!(
+                    "Expected exactly one non-empty vector for column {header} (col {n_col}). Found:\n
+- len_boolean = {len_boolean}\n
+- len_date = {len_date}\n
+- len_int64 = {len_int64}\n
+- len_float64 = {len_float64}\n
+- len_string = {len_string}",
+                    len_boolean = u8::from(vec_boolean.iter().any(|v| v.is_some())),
+                    len_date = u8::from(vec_date.iter().any(|v| v.is_some())),
+                    len_int64 = u8::from(vec_int64.iter().any(|v| v.is_some())),
+                    len_float64 = u8::from(vec_float64.iter().any(|v| v.is_some())),
+                    len_string = u8::from(vec_string.iter().any(|v| v.is_some())),
+                )
+            }
+
             assert_eq!(
-                [
-                    u8::from(vec_boolean.iter().any(|v| v.is_some())),
-                    u8::from(vec_date.iter().any(|v| v.is_some())),
-                    u8::from(vec_int64.iter().any(|v| v.is_some())),
-                    u8::from(vec_float64.iter().any(|v| v.is_some())),
-                    u8::from(vec_string.iter().any(|v| v.is_some())),
-                ]
-                .iter()
-                .sum::<u8>(),
-                1,
+                collected_data_types, 1,
                 "Expected exactly one non-empty vector"
             );
         }
