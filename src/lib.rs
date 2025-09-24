@@ -392,13 +392,20 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
             .iter()
             .sum::<u8>();
 
+            if collected_data_types == 0 {
+                log::warn!(
+                    "Skipping column {header:?} (col {n_col}) because there are no real collected values"
+                );
+                continue;
+            }
+
             if collected_data_types != 1 {
-                eprintln!(
-                    "Expected exactly one non-empty vector for column {header} (col {n_col}). Found:\n
-- len_boolean = {len_boolean}\n
-- len_date = {len_date}\n
-- len_int64 = {len_int64}\n
-- len_float64 = {len_float64}\n
+                log::error!(
+                    "Expected exactly one non-empty vector for column {header:?} (col {n_col}). Found:
+- len_boolean = {len_boolean}
+- len_date = {len_date}
+- len_int64 = {len_int64}
+- len_float64 = {len_float64}
 - len_string = {len_string}",
                     len_boolean = u8::from(vec_boolean.iter().any(|v| v.is_some())),
                     len_date = u8::from(vec_date.iter().any(|v| v.is_some())),
