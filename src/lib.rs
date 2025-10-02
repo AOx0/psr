@@ -396,6 +396,14 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
                 log::warn!(
                     "Skipping column {header:?} (col {n_col}) because there are no real collected values"
                 );
+
+                let smol_header = PlSmallStr::from_str(&header);
+                let series = Series::new_null(smol_header, values_len);
+
+                log::debug!("Adding column {header} with dtype {dtype:?}");
+                df.with_column(series)
+                    .map_err(|e| ReaderError::AddColumn(header, format!("{e:?}")))?;
+
                 continue;
             }
 
