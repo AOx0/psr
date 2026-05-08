@@ -270,26 +270,25 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
 
     log::debug!("Sheet {sheet} has been read");
 
-    // Get all rows, skip to start_row, then filter for non-empty
-    // Also filter out footnote rows (first cell starts with * or &)
+    // Get all rows, skip to start_row, then filter for rows with content
+    // Skip footnote rows (first cell starts with * or &)
+    // A row is considered valid if it has at least 3 non-empty cells (headers have many columns)
     let mut rows = range
         .rows()
         .skip(start_row)
         .filter(|row| {
+            // Check if first cell starts with * or & (footnote)
             if let Some(first) = row.first() {
-                if first.is_empty() {
-                    return false;
-                }
-                // Filter out footnote rows (first cell starts with * or &)
                 if let calamine::Data::String(s) = first {
                     let trimmed = s.trim();
                     if trimmed.starts_with('*') || trimmed.starts_with('&') {
                         return false;
                     }
                 }
-                return true;
             }
-            false
+            // Row is valid if it has at least 3 non-empty cells
+            let non_empty_count = row.iter().filter(|c| !c.is_empty()).count();
+            non_empty_count >= 3
         });
 
     let Some(header_row) = rows.next() else {
