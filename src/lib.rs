@@ -1,9 +1,8 @@
 #![deny(rust_2018_idioms, unsafe_code)]
 #![deny(clippy::unwrap_used)]
 
-use ::strings::sanitize_spaces;
 pub use calamine::Xlsx;
-use calamine::{Data, DataType as _, Range, Reader, open_workbook};
+use calamine::{open_workbook, Data, DataType as _, Range, Reader};
 use chrono::NaiveDateTime;
 use polars::prelude::*;
 use std::{
@@ -69,8 +68,8 @@ fn read_set_from_range(
         let k = ref_to_string(k);
         let v = ref_to_string(v);
 
-        let k = sanitize_spaces(k.trim());
-        let v = sanitize_spaces(v.trim());
+        let k = ::strings::sanitize_spaces(k.trim());
+        let v = ::strings::sanitize_spaces(v.trim());
 
         res.insert(k, v);
     }
@@ -153,7 +152,7 @@ where
     Ok(res)
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub struct Options {
     pub skip_last: usize,
     pub skip_first: usize,
@@ -161,6 +160,10 @@ pub struct Options {
     pub empty_str_as_none: bool,
     /// When strict is true, the reader will return an error if the sheet does contain cells with errors, otherwise it will log them and place a None value instead.
     pub strict_cell_errors: bool,
+    /// Start reading from this row index (0-based). Skips rows before looking for header.
+    pub start_row: usize,
+    /// Optional range of columns to read (0-indexed, exclusive end). If None, reads all columns.
+    pub col_range: Option<std::ops::Range<usize>>,
 }
 
 /// Read a single sheet named `sheet` from the path `path` with options to skip rows.
@@ -251,13 +254,14 @@ where
 fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
     excel: &mut R,
     sheet: &str,
-    opts @ Options {
-        skip_last,
-        skip_first,
-        ..
-    }: Options,
+    opts: Options,
 ) -> ReaderResult<DataFrame> {
     let mut df = DataFrame::default();
+
+    let skip_last = opts.skip_last;
+    let skip_first = opts.skip_first;
+    let start_row = opts.start_row;
+    let col_range = opts.col_range.clone();
 
     log::debug!("Reading sheet {sheet}");
     let range = excel
@@ -265,35 +269,74 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
         .map_err(|e| ReaderError::OpenWorksheet(sheet.to_string(), format!("{e:?}")))?;
 
     log::debug!("Sheet {sheet} has been read");
+
+    // Get all rows, skip to start_row, then filter for non-empty
+    // Also filter out footnote rows (first cell starts with * or &)
     let mut rows = range
         .rows()
-        .filter(|row| row.first().is_some_and(|c| !c.is_empty()));
+        .skip(start_row)
+        .filter(|row| {
+            if let Some(first) = row.first() {
+                if first.is_empty() {
+                    return false;
+                }
+                // Filter out footnote rows (first cell starts with * or &)
+                if let calamine::Data::String(s) = first {
+                    let trimmed = s.trim();
+                    if trimmed.starts_with('*') || trimmed.starts_with('&') {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            false
+        });
 
     let Some(header_row) = rows.next() else {
         return Err(ReaderError::NoHeaders(sheet.to_string()));
     };
 
-    let headers = header_row.iter().map(|d| {
-        if let Data::String(s) = d {
-            s.to_string()
-        } else {
-            d.to_string()
-        }
-    });
-    log::debug!(
-        "Sheet {} has headers: {:?}",
-        sheet,
-        headers.clone().collect::<Vec<_>>()
-    );
+    // Count remaining rows after header
+    let remaining_rows = rows.clone().count();
+    // Ensure skip_last doesn't exceed remaining rows
+    let effective_skip_last = skip_last.min(remaining_rows);
+    log::debug!("Sheet {sheet}: remaining_rows={remaining_rows}, skip_last={skip_last}, effective_skip_last={effective_skip_last}");
 
-    let has_values = headers
-        .clone()
+    // Filter headers based on col_range
+    let headers: Vec<String> = header_row
+        .iter()
         .enumerate()
-        .map(|(n_col, _)| {
+        .filter(|(idx, _)| {
+            if let Some(ref range) = col_range {
+                range.contains(idx)
+            } else {
+                true
+            }
+        })
+        .map(|(_, d)| {
+            if let Data::String(s) = d {
+                s.to_string()
+            } else {
+                d.to_string()
+            }
+        })
+        .collect();
+    // Build mapping of output column index -> original column index
+    let col_indices: Vec<usize> = if let Some(ref range) = col_range {
+        range.clone().collect()
+    } else {
+        (0..header_row.len()).collect()
+    };
+
+    log::debug!("Sheet {} has headers: {:?}", sheet, headers.clone());
+
+    let has_values = col_indices
+        .iter()
+        .map(|&orig_idx| {
             let rows_len = rows.clone().count();
             rows.clone()
-                .map(|row| &row[n_col])
-                .take(rows_len - skip_last)
+                .map(|row| &row[orig_idx])
+                .take(rows_len.saturating_sub(effective_skip_last))
                 .skip(skip_first)
                 .count()
         })
@@ -310,13 +353,14 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
     }
 
     let mut errors = vec![];
-    for (n_col, header) in headers.enumerate() {
+    for (out_idx, header) in headers.iter().enumerate() {
+        let orig_idx = col_indices[out_idx];
         let mut flags = EMPTY;
         let rows_len = rows.clone().count();
         let values = rows
             .clone()
-            .map(|row| &row[n_col])
-            .take(rows_len - skip_last)
+            .map(|row| &row[orig_idx])
+            .take(rows_len.saturating_sub(effective_skip_last))
             .skip(skip_first);
         let values_len = values.clone().count();
 
@@ -328,7 +372,7 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
                 Data::String(_) | Data::DateTimeIso(_) | Data::DurationIso(_) => STRING,
                 Data::Error(err) => {
                     log::error!(
-                        "Error with col {header:?} (no. {n_col}) row {n_row} parsing value: {err}"
+                        "Error with col {header:?} (no. {orig_idx}) row {n_row} parsing value: {err}"
                     );
                     EMPTY
                 }
@@ -362,7 +406,7 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
 
         for (n_row, value) in values.cloned().enumerate() {
             if let Err(err) = populate_vectors(
-                opts,
+                &opts,
                 n_row,
                 value,
                 &dtype,
@@ -374,7 +418,7 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
             ) {
                 errors.push(CellError {
                     row: n_row,
-                    col: n_col,
+                    col: orig_idx,
                     error: err,
                     header: header.clone(),
                 });
@@ -394,22 +438,22 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
 
             if collected_data_types == 0 {
                 log::warn!(
-                    "Skipping column {header:?} (col {n_col}) because there are no real collected values"
+                    "Skipping column {header:?} (col {orig_idx}) because there are no real collected values"
                 );
 
-                let smol_header = PlSmallStr::from_str(&header);
+                let smol_header = PlSmallStr::from_str(header);
                 let series = Series::new_null(smol_header, values_len);
 
                 log::debug!("Adding column {header} with dtype {dtype:?}");
                 df.with_column(series)
-                    .map_err(|e| ReaderError::AddColumn(header, format!("{e:?}")))?;
+                    .map_err(|e| ReaderError::AddColumn(header.clone(), format!("{e:?}")))?;
 
                 continue;
             }
 
             if collected_data_types != 1 {
                 log::error!(
-                    "Expected exactly one non-empty vector for column {header:?} (col {n_col}). Found:
+                    "Expected exactly one non-empty vector for column {header:?} (col {orig_idx}). Found:
 - len_boolean = {len_boolean}
 - len_date = {len_date}
 - len_int64 = {len_int64}
@@ -429,7 +473,7 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
             );
         }
 
-        let smol_header = PlSmallStr::from_str(&header);
+        let smol_header = PlSmallStr::from_str(header);
         let series = match dtype {
             DataType::Boolean => Series::new(smol_header, vec_boolean),
             DataType::Int64 => Series::new(smol_header, vec_int64),
@@ -441,7 +485,7 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
 
         log::debug!("Adding column {header} with dtype {dtype:?}");
         df.with_column(series)
-            .map_err(|e| ReaderError::AddColumn(header, format!("{e:?}")))?;
+            .map_err(|e| ReaderError::AddColumn(header.clone(), format!("{e:?}")))?;
     }
 
     if errors.is_empty() {
@@ -453,11 +497,7 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
 
 #[allow(clippy::too_many_arguments)]
 fn populate_vectors(
-    Options {
-        empty_str_as_none,
-        strict_cell_errors,
-        ..
-    }: Options,
+    opts: &Options,
     n_row: usize,
     value: Data,
     dtype: &DataType,
@@ -467,6 +507,8 @@ fn populate_vectors(
     vec_boolean: &mut Vec<Option<bool>>,
     vec_date: &mut Vec<Option<NaiveDateTime>>,
 ) -> Result<(), calamine::CellErrorType> {
+    let empty_str_as_none = opts.empty_str_as_none;
+    let strict_cell_errors = opts.strict_cell_errors;
     match value {
         Data::Int(v) if *dtype == DataType::Int64 => vec_int64.push(Some(v)),
         Data::Float(v) if *dtype == DataType::Float64 => vec_float64.push(Some(v)),
