@@ -128,6 +128,44 @@ pub struct CellError {
 
 pub type ReaderResult<T> = std::result::Result<T, ReaderError>;
 
+/// Result of reading a sheet, including the coordinate mapping
+/// from DataFrame positions back to the original Excel positions.
+#[derive(Debug)]
+pub struct ReadSheetResult {
+    /// The filtered DataFrame.
+    pub df: DataFrame,
+    /// Maps each DataFrame row index to the 1-indexed Excel row number.
+    /// row_mapping[0] = Excel row of the first data row.
+    /// Len == df.height().
+    pub row_mapping: Vec<u32>,
+    /// The 1-indexed Excel row number of the header row.
+    pub header_row: u32,
+    /// Maps each DataFrame column index to the 1-indexed Excel column number.
+    /// col_mapping[0] = Excel column of the first DataFrame column.
+    /// Len == df.get_column_names().len().
+    pub col_mapping: Vec<u32>,
+}
+
+/// Read a single sheet with options, returning the DataFrame and
+/// the coordinate mapping from DataFrame indices to Excel positions.
+///
+/// # Errors
+///
+/// Same error conditions as `read_sheet_with_opts`.
+pub fn read_sheet_with_mapping<P, R>(
+    path: P,
+    sheet: &str,
+    opts: Options,
+) -> ReaderResult<ReadSheetResult>
+where
+    R: Reader<BufReader<File>>,
+    P: AsRef<Path>,
+{
+    let mut excel: R = open_workbook(path.as_ref())
+        .map_err(|e| ReaderError::OpenWorkbook(path.as_ref().to_path_buf(), format!("{e:?}")))?;
+    read_sheet_from_sheets_inner(&mut excel, sheet, opts)
+}
+
 /// Read all sheets from a path into a collection of `DataFrame`
 ///
 /// # Errors
@@ -251,11 +289,11 @@ where
 ///
 /// The function panics if values can not be generalized to a single type, this is a bug and must be
 /// reported
-fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
+fn read_sheet_from_sheets_inner<R: Reader<BufReader<File>>>(
     excel: &mut R,
     sheet: &str,
     opts: Options,
-) -> ReaderResult<DataFrame> {
+) -> ReaderResult<ReadSheetResult> {
     let mut df = DataFrame::default();
 
     let skip_last = opts.skip_last;
@@ -270,13 +308,19 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
 
     log::debug!("Sheet {sheet} has been read");
 
+    // Read range start offset for position tracking
+    let range_start = range.start().unwrap_or((0, 0));
+    let range_start_row = range_start.0 as usize;
+    let range_start_col = range_start.1 as usize;
+
     // Get all rows, skip to start_row, then filter for rows with content
     // Skip footnote rows (first cell starts with * or &)
     // A row is considered valid if it has at least 3 non-empty cells (headers have many columns)
     let mut rows = range
         .rows()
+        .enumerate()
         .skip(start_row)
-        .filter(|row| {
+        .filter(|(_idx, row)| {
             // Check if first cell starts with * or & (footnote)
             if let Some(first) = row.first() {
                 if let calamine::Data::String(s) = first {
@@ -291,7 +335,7 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
             non_empty_count >= 3
         });
 
-    let Some(header_row) = rows.next() else {
+    let Some((header_idx, header_row)) = rows.next() else {
         return Err(ReaderError::NoHeaders(sheet.to_string()));
     };
 
@@ -300,6 +344,23 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
     // Ensure skip_last doesn't exceed remaining rows
     let effective_skip_last = skip_last.min(remaining_rows);
     log::debug!("Sheet {sheet}: remaining_rows={remaining_rows}, skip_last={skip_last}, effective_skip_last={effective_skip_last}");
+
+    // Build position mappings
+    let header_row_1indexed = (header_idx + range_start_row + 1) as u32;
+
+    // Collect Excel positions of all data rows that pass the filter
+    let all_data_positions: Vec<usize> = rows.clone().map(|(idx, _)| idx).collect();
+
+    // Apply the same skip_first / effective_skip_last as the DataFrame rows
+    let row_mapping: Vec<u32> = all_data_positions
+        .iter()
+        .skip(skip_first)
+        .take(all_data_positions.len().saturating_sub(skip_first + effective_skip_last))
+        .map(|&idx| (idx + range_start_row + 1) as u32)
+        .collect();
+
+    // Build col_mapping after col_indices is defined
+    // (moved after headers/col_indices construction)
 
     // Filter headers based on col_range
     let headers: Vec<String> = header_row
@@ -327,6 +388,12 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
         (0..header_row.len()).collect()
     };
 
+    // Build col_mapping from col_indices
+    let col_mapping: Vec<u32> = col_indices
+        .iter()
+        .map(|&orig_idx| (orig_idx + range_start_col + 1) as u32)
+        .collect();
+
     log::debug!("Sheet {} has headers: {:?}", sheet, headers.clone());
 
     let has_values = col_indices
@@ -334,7 +401,7 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
         .map(|&orig_idx| {
             let rows_len = rows.clone().count();
             rows.clone()
-                .map(|row| &row[orig_idx])
+                .map(|(_, row)| &row[orig_idx])
                 .take(rows_len.saturating_sub(effective_skip_last))
                 .skip(skip_first)
                 .count()
@@ -348,7 +415,12 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
                 .map_err(|e| ReaderError::AddColumn(header, format!("{e:?}")))?;
         }
         log::debug!("No values provided, empty sheet. Adding headers as columns of type String");
-        return Ok(df);
+        return Ok(ReadSheetResult {
+            df,
+            row_mapping: Vec::new(), // df has 0 rows, so row_mapping must be empty
+            header_row: header_row_1indexed,
+            col_mapping,
+        });
     }
 
     let mut errors = vec![];
@@ -358,7 +430,7 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
         let rows_len = rows.clone().count();
         let values = rows
             .clone()
-            .map(|row| &row[orig_idx])
+            .map(|(_, row)| &row[orig_idx])
             .take(rows_len.saturating_sub(effective_skip_last))
             .skip(skip_first);
         let values_len = values.clone().count();
@@ -488,10 +560,36 @@ fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
     }
 
     if errors.is_empty() {
-        Ok(df)
+        Ok(ReadSheetResult {
+            df,
+            row_mapping,
+            header_row: header_row_1indexed,
+            col_mapping,
+        })
     } else {
         Err(ReaderError::CellErrors(errors))
     }
+}
+
+/// Read a single sheet named `sheet` from the path `path` with options to skip rows.
+///
+/// This function opens the workbook at `path`, finds the sheet named `sheet`,
+/// and reads its content into a Polars `DataFrame`.
+///
+/// # Errors
+///
+/// This function will return an error if:
+/// - The workbook at the given path cannot be opened (`ReaderError::OpenWorkbook`).
+/// - The specified sheet does not exist or cannot be accessed within the workbook (`ReaderError::OpenWorksheet`).
+/// - The sheet does not contain a header row (`ReaderError::NoHeaders`).
+/// - There is an issue adding a column to the `DataFrame`, possibly due to inconsistent
+///   row counts after skipping (`ReaderError::AddColumn`).
+fn read_sheet_from_sheets<R: Reader<BufReader<File>>>(
+    excel: &mut R,
+    sheet: &str,
+    opts: Options,
+) -> ReaderResult<DataFrame> {
+    read_sheet_from_sheets_inner(excel, sheet, opts).map(|r| r.df)
 }
 
 #[allow(clippy::too_many_arguments)]

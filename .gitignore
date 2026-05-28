@@ -37,3 +37,8 @@ Thumbs.db
 # Flamegraph profiling
 flamegraph.svg
 perf.data*
+# Test binaries
+test_enumerate_clone
+
+# Cargo lock (library)
+Cargo.lock
